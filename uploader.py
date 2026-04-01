@@ -25,16 +25,34 @@ async def upload_drama(client: TelegramClient, chat_id: int,
     import subprocess
     import tempfile
     try:
-        # 1. Send Poster + Description
-        caption = f"🎬 **{title}**\n\n📝 **Sinopsis:**\n{description[:500]}..." # Limit caption length
+        # 1. Send Poster + Description as PHOTO (not file)
+        caption = f"🎬 **{title}**\n\n📝 **Sinopsis:**\n{description[:500]}..."
         
-        # Send Photo with Caption
-        sent_info = await client.send_file(
+        # Download poster to temp file first so Telethon sends it as photo
+        import httpx
+        poster_path = None
+        try:
+            async with httpx.AsyncClient(timeout=30) as http_client:
+                resp = await http_client.get(poster_url)
+                if resp.status_code == 200:
+                    poster_path = os.path.join(tempfile.gettempdir(), f"poster_{title[:20].replace(' ','_')}.jpg")
+                    with open(poster_path, "wb") as pf:
+                        pf.write(resp.content)
+        except Exception as e:
+            logger.warning(f"Failed to download poster: {e}")
+        
+        # Send as visible photo
+        await client.send_file(
             chat_id,
-            poster_url,
+            poster_path or poster_url,
             caption=caption,
-            parse_mode='html'
+            parse_mode='md',
+            force_document=False  # Force as PHOTO, not file
         )
+        
+        # Cleanup poster temp file
+        if poster_path and os.path.exists(poster_path):
+            os.remove(poster_path)
         
         status_msg = await client.send_message(chat_id, "📤 Ekstraksi Thumbnail & Durasi Video...")
         

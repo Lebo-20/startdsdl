@@ -3,60 +3,28 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://drakula.dramabos.my.id/api/microdrama"
+BASE_URL = "https://stardusttv.dramabos.my.id/v1"
 AUTH_CODE = "A8D6AB170F7B89F2182561D3B32F390D"
 
-async def get_drama_detail(book_id: str):
-    url = f"{BASE_URL}/drama/{book_id}"
-    params = {
-        "lang": "id",
-        "code": AUTH_CODE
-    }
-    
-    async with httpx.AsyncClient(timeout=30) as client:
-        try:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            if data and isinstance(data, dict):
-                if data.get("success") and "data" in data:
-                    return data["data"]
-                return data
-            return None
-        except Exception as e:
-            logger.error(f"Error fetching drama detail for {book_id}: {e}")
-            return None
 
-async def get_all_episodes(book_id: str):
-    # For MicroDrama API, the episodes are returned inside the detail response
-    detail = await get_drama_detail(book_id)
-    if detail and "episodes" in detail:
-        return detail["episodes"]
-    return []
-
-async def get_latest_dramas(pages=1, types=None):
-    """Tries to find new dramas from verified API endpoints."""
+async def get_latest_dramas(pages=1):
+    """Fetches latest dramas from StardustTV list endpoint."""
     all_dramas = []
-    
+
     async with httpx.AsyncClient(timeout=30) as client:
         for page in range(1, pages + 1):
             url = f"{BASE_URL}/list"
             params = {
                 "lang": "id",
-                "code": AUTH_CODE,
                 "page": page,
-                "limit": 20
             }
-            if types and isinstance(types, list) and len(types) > 0:
-                params["type"] = types[0]
-                
+
             try:
                 response = await client.get(url, params=params)
                 if response.status_code == 200:
                     data = response.json()
-                    if data.get("success") and "data" in data:
-                        items_data = data["data"]
-                        items = items_data.get("data", [])
+                    if data.get("status") and "data" in data:
+                        items = data["data"]
                         if not items:
                             break
                         all_dramas.extend(items)
@@ -67,58 +35,43 @@ async def get_latest_dramas(pages=1, types=None):
             except Exception as e:
                 logger.error(f"Error fetching list page {page}: {e}")
                 break
-    
+
     return all_dramas
 
-# iDrama API (API 2) Configuration
-BASE_IDRAMA = "https://idrama.dramabos.my.id"
 
-async def get_latest_idramas(pages=1):
-    """Fetches latest dramas from iDrama API home sections."""
-    all_dramas = []
+async def search_dramas(query: str):
+    """Searches dramas using StardustTV find endpoint."""
+    url = f"{BASE_URL}/find"
+    params = {
+        "q": query,
+        "lang": "id",
+    }
+
     async with httpx.AsyncClient(timeout=30) as client:
         try:
-            # 1. Fetch home to get some tab IDs
-            home_url = f"{BASE_IDRAMA}/home"
-            params = {"lang": "id"}
-            resp = await client.get(home_url, params=params)
-            if resp.status_code != 200:
-                return []
-            
-            home_data = resp.json()
-            # If the data has tabs, try the first few tabs
-            tabs = home_data.get("data", []) if isinstance(home_data, dict) else []
-            if not tabs:
-                return []
-                
-            # Iterate through tabs and get content
-            for tab in tabs[:2]: # Only first 2 tabs to avoid overloading
-                tab_id = tab.get("id")
-                if not tab_id: continue
-                
-                tab_url = f"{BASE_IDRAMA}/tab/{tab_id}"
-                tab_resp = await client.get(tab_url, params={"lang": "id"})
-                if tab_resp.status_code == 200:
-                    tab_data = tab_resp.json()
-                    # Each tab has sections, each section has data (dramas)
-                    sections = tab_data.get("data", []) if isinstance(tab_data, dict) else []
-                    for section in sections:
-                        items = section.get("data", [])
-                        if isinstance(items, list):
-                            all_dramas.extend(items)
+            response = await client.get(url, params=params)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") and "data" in data:
+                    return data["data"]
+            return []
         except Exception as e:
-            logger.error(f"Error fetching iDrama latest: {e}")
-            
-    return all_dramas
+            logger.error(f"Error searching dramas for '{query}': {e}")
+            return []
 
-async def get_idrama_detail(book_id: str):
-    """Fetches drama detail from iDrama API."""
-    url = f"{BASE_IDRAMA}/drama/{book_id}"
+
+async def get_drama_detail(slug: str, drama_id: str):
+    """Fetches drama detail + episodes from StardustTV.
+    
+    Returns dict with keys: id, slug, title, poster, totalEpisodes, episodes
+    episodes is a dict like {"1": {"h264": url, "h265": url}, "2": {...}, ...}
+    """
+    url = f"{BASE_URL}/detail/{slug}/{drama_id}"
     params = {
         "lang": "id",
-        "code": AUTH_CODE
+        "code": AUTH_CODE,
     }
-    
+
     async with httpx.AsyncClient(timeout=30) as client:
         try:
             response = await client.get(url, params=params)
@@ -130,12 +83,60 @@ async def get_idrama_detail(book_id: str):
                 return data
             return None
         except Exception as e:
-            logger.error(f"Error fetching iDrama detail for {book_id}: {e}")
+            logger.error(f"Error fetching drama detail for {slug}/{drama_id}: {e}")
             return None
 
-async def get_idrama_all_episodes(book_id: str):
-    """Fetches episodes from iDrama API detail."""
-    detail = await get_idrama_detail(book_id)
-    if detail and "episodes" in detail:
-        return detail["episodes"]
-    return []
+
+async def get_all_episodes(slug: str, drama_id: str):
+    """Fetches all episodes from StardustTV detail endpoint.
+    
+    Returns a list of dicts: [{"episode": 1, "h264": url, "h265": url}, ...]
+    sorted by episode number.
+    """
+    detail = await get_drama_detail(slug, drama_id)
+    if not detail or "episodes" not in detail:
+        return []
+
+    episodes_dict = detail["episodes"]
+    if not isinstance(episodes_dict, dict):
+        return []
+
+    # Convert dict to sorted list
+    episodes_list = []
+    for ep_num_str, urls in episodes_dict.items():
+        try:
+            ep_num = int(ep_num_str)
+        except ValueError:
+            continue
+        episodes_list.append({
+            "episode": ep_num,
+            "h264": urls.get("h264", ""),
+            "h265": urls.get("h265", ""),
+        })
+
+    episodes_list.sort(key=lambda x: x["episode"])
+    return episodes_list
+
+
+async def get_episode_stream(slug: str, drama_id: str, ep_num: int):
+    """Fetches a single episode stream URL from StardustTV.
+    
+    Returns dict with keys: episode, h264, h265
+    """
+    url = f"{BASE_URL}/detail/{slug}/{drama_id}/episode/{ep_num}"
+    params = {
+        "lang": "id",
+        "code": AUTH_CODE,
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            if data and data.get("success") and "data" in data:
+                return data["data"]
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching episode {ep_num} for {slug}/{drama_id}: {e}")
+            return None

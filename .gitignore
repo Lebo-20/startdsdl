@@ -18,3 +18,8 @@ teamdl-firebase-adminsdk-fbsvc-e94b44d7c0.json
 
 # Logs
 *.log
+
+# Sessions
+*.session
+*.session-journal
+*.session-journal

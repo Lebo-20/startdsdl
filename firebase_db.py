@@ -31,19 +31,29 @@ def is_already_uploaded(title):
     init_firebase()
     try:
         ref = db.reference('uploaded_titles')
-        # Use a sanitized version of the title as key or just search by value
-        # It's safer to store as a list or use a hash of the title
-        # For simplicity, we search for the value
-        snapshot = ref.order_by_value().equal_to(title).get()
-        return bool(snapshot)
+        # To avoid "Index not defined" error, we fetch all and check locally
+        # If the number of titles becomes massive, this should be refactored to use keys
+        data = ref.get()
+        if not data:
+            return False
+        
+        # Check if title exists in the values
+        if isinstance(data, dict):
+            return title in data.values()
+        elif isinstance(data, list):
+            return title in data
+        return False
     except Exception as e:
         logger.error(f"Error checking title in Firebase: {e}")
         return False
 
 def mark_as_uploaded(title):
-    """Saves the title to the Firebase database."""
+    """Saves the title to the Firebase database if not already there."""
     init_firebase()
     try:
+        if is_already_uploaded(title):
+            return True
+            
         ref = db.reference('uploaded_titles')
         ref.push(title)
         logger.info(f"Marked {title} as uploaded in Firebase.")

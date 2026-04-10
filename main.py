@@ -120,7 +120,7 @@ async def on_download(event):
     chat_id = event.chat_id
     
     # Check admin
-    if chat_id != ADMIN_ID:
+    if chat_id != ADMIN_ID and chat_id != AUTO_CHANNEL:
         await event.reply("❌ Maaf, perintah ini hanya untuk admin.")
         return
         
@@ -131,6 +131,13 @@ async def on_download(event):
     slug = event.pattern_match.group(1).strip()
     drama_id = event.pattern_match.group(2).strip()
     
+    # Check if we are in a topic
+    thread_id = None
+    if event.is_group and event.reply_to:
+        thread_id = event.reply_to.reply_to_msg_id
+    elif chat_id == AUTO_CHANNEL:
+        thread_id = AUTO_THREAD
+        
     # 1. Fetch data
     detail = await get_drama_detail(slug, drama_id)
     if not detail:
@@ -143,13 +150,11 @@ async def on_download(event):
         return
 
     title = detail.get("title") or f"Drama_{drama_id}"
-    description = detail.get("intro") or "No description available."
-    poster = detail.get("poster") or ""
     
     status_msg = await event.reply(f"🎬 Drama: **{title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang mendownload dan memproses...")
     
     BotState.is_processing = True
-    success = await process_drama_full(slug, drama_id, chat_id, status_msg)
+    success = await process_drama_full(slug, drama_id, chat_id, status_msg, thread_id=thread_id)
     
     if success:
         processed_ids.add(drama_id)
@@ -161,7 +166,7 @@ async def on_download(event):
         
     BotState.is_processing = False
 
-async def process_drama_full(slug, drama_id, chat_id, status_msg=None):
+async def process_drama_full(slug, drama_id, chat_id, status_msg=None, thread_id=None):
     """Refactored logic to be reusable for auto-mode."""
     detail = await get_drama_detail(slug, drama_id)
     episodes = await get_all_episodes(slug, drama_id)
@@ -196,12 +201,16 @@ async def process_drama_full(slug, drama_id, chat_id, status_msg=None):
             return False
 
         # 5. Upload
+        # If thread_id is not provided, check if we are sending to AUTO_CHANNEL
+        if thread_id is None and chat_id == AUTO_CHANNEL:
+            thread_id = AUTO_THREAD
+            
         upload_success = await upload_drama(
             client, chat_id, 
             title, description, 
             poster, output_video_path,
             episodes_count=len(episodes),
-            thread_id=AUTO_THREAD if chat_id == AUTO_CHANNEL else None
+            thread_id=thread_id
         )
         
         if upload_success:
@@ -270,7 +279,15 @@ async def auto_mode_loop():
                 if not drama_id or not slug:
                     continue
                     
-                if drama_id in processed_ids or is_already_uploaded(title):
+                if drama_id in processed_ids:
+                    logger.info(f"⏭ Skipping {title}: Already in processed.json")
+                    continue
+                
+                if is_already_uploaded(title):
+                    logger.info(f"⏭ Skipping {title}: Already in Firebase")
+                    # Sync to local processed_ids if missing
+                    processed_ids.add(drama_id)
+                    save_processed(processed_ids)
                     continue
                 
                 logger.info(f"✨ [STARDUSTTV] New drama: {title} ({slug}/{drama_id}). Starting process...")

@@ -11,7 +11,7 @@ async def get_latest_dramas(pages=1):
     """Fetches latest dramas from StardustTV list endpoint."""
     all_dramas = []
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         for page in range(1, pages + 1):
             url = f"{BASE_URL}/list"
             params = {
@@ -47,7 +47,7 @@ async def search_dramas(query: str):
         "lang": "id",
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         try:
             response = await client.get(url, params=params)
             if response.status_code == 200:
@@ -72,7 +72,7 @@ async def get_drama_detail(slug: str, drama_id: str):
         "code": AUTH_CODE,
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         try:
             response = await client.get(url, params=params)
             response.raise_for_status()
@@ -129,7 +129,7 @@ async def get_episode_stream(slug: str, drama_id: str, ep_num: int):
         "code": AUTH_CODE,
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         try:
             response = await client.get(url, params=params)
             response.raise_for_status()

@@ -17,13 +17,15 @@ from api import (
 from downloader import download_all_episodes
 from merge import merge_episodes
 from uploader import upload_drama
+from firebase_db import is_already_uploaded, mark_as_uploaded
 
 # Configuration (Use environment variables or replace these directly)
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-AUTO_CHANNEL = int(os.environ.get("AUTO_CHANNEL", ADMIN_ID)) # Default post to admin
+AUTO_CHANNEL = -1003857149032 # Target Channel ID
+AUTO_THREAD = 6 # Target Topic/Thread ID
 PROCESSED_FILE = "processed.json"
 
 # Initialize state
@@ -147,10 +149,16 @@ async def on_download(event):
     status_msg = await event.reply(f"🎬 Drama: **{title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang mendownload dan memproses...")
     
     BotState.is_processing = True
-    processed_ids.add(drama_id)
-    save_processed(processed_ids)
+    success = await process_drama_full(slug, drama_id, chat_id, status_msg)
     
-    await process_drama_full(slug, drama_id, chat_id, status_msg)
+    if success:
+        processed_ids.add(drama_id)
+        save_processed(processed_ids)
+        mark_as_uploaded(title) # Save to Firebase
+        logger.info(f"✅ Berhasil memproses manual: {slug}/{drama_id}")
+    else:
+        logger.error(f"❌ Gagal memproses manual: {slug}/{drama_id}")
+        
     BotState.is_processing = False
 
 async def process_drama_full(slug, drama_id, chat_id, status_msg=None):
@@ -191,7 +199,9 @@ async def process_drama_full(slug, drama_id, chat_id, status_msg=None):
         upload_success = await upload_drama(
             client, chat_id, 
             title, description, 
-            poster, output_video_path
+            poster, output_video_path,
+            episodes_count=len(episodes),
+            thread_id=AUTO_THREAD if chat_id == AUTO_CHANNEL else None
         )
         
         if upload_success:
@@ -255,43 +265,45 @@ async def auto_mode_loop():
                     
                 drama_id = str(drama.get("id", ""))
                 slug = drama.get("slug", "")
+                title = drama.get("title") or "Unknown"
+                
                 if not drama_id or not slug:
                     continue
                     
-                if drama_id not in processed_ids:
-                    # Mark as processed immediately
+                if drama_id in processed_ids or is_already_uploaded(title):
+                    continue
+                
+                logger.info(f"✨ [STARDUSTTV] New drama: {title} ({slug}/{drama_id}). Starting process...")
+                
+                # Notify admin
+                try:
+                    await client.send_message(ADMIN_ID, f"🆕 **Auto-System Mendeteksi Drama Baru!**\n🎬 `{title}`\n🆔 `{slug}/{drama_id}`\n⏳ Memproses download & merge...")
+                except: pass
+                
+                BotState.is_processing = True
+                new_found += 1
+                # Process to target channel
+                success = await process_drama_full(slug, drama_id, AUTO_CHANNEL)
+                BotState.is_processing = False
+                
+                if success:
+                    # Mark as processed ONLY on success
                     processed_ids.add(drama_id)
                     save_processed(processed_ids)
+                    mark_as_uploaded(title) # Save to Firebase
                     
-                    new_found += 1
-                    title = drama.get("title") or "Unknown"
-                    logger.info(f"✨ [STARDUSTTV] New drama: {title} ({slug}/{drama_id}). Starting process...")
-                    
-                    # Notify admin
+                    logger.info(f"✅ Finished {title}")
                     try:
-                        await client.send_message(ADMIN_ID, f"🆕 **Auto-System Mendeteksi Drama Baru!**\n🎬 `{title}`\n🆔 `{slug}/{drama_id}`\n⏳ Memproses download & merge...")
+                        await client.send_message(ADMIN_ID, f"✅ Sukses Auto-Post: **{title}** ke channel.")
                     except: pass
-                    
-                    BotState.is_processing = True
-                    # Process to target channel
-                    success = await process_drama_full(slug, drama_id, AUTO_CHANNEL)
-                    BotState.is_processing = False
-                    
-                    if success:
-                        logger.info(f"✅ Finished {title}")
-                        try:
-                            await client.send_message(ADMIN_ID, f"✅ Sukses Auto-Post: **{title}** ke channel.")
-                        except: pass
-                    else:
-                        logger.error(f"❌ Failed to process {title}")
-                        BotState.is_auto_running = False
-                        try:
-                            await client.send_message(ADMIN_ID, f"🚨 **ERROR**: Proses `{title}` gagal!\n🛑 **Auto-mode OTOMATIS BERHENTI**.\nCek /panel untuk menghidupkan kembali.")
-                        except: pass
-                        break
-                    
-                    # Prevent hitting API/Telegram rate limits too hard
-                    await asyncio.sleep(10)
+                else:
+                    logger.error(f"❌ Failed to process {title}. Will retry in next scan.")
+                    try:
+                        await client.send_message(ADMIN_ID, f"⚠️ **WARNING**: Proses `{title}` gagal dan akan dicoba lagi nanti.")
+                    except: pass
+                
+                # Prevent hitting API/Telegram rate limits too hard
+                await asyncio.sleep(15)
             
             if new_found == 0:
                 logger.info("😴 No new dramas found in this scan.")

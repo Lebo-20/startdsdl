@@ -1,34 +1,78 @@
 import os
 import asyncio
+import time
+import logging
 from telethon import TelegramClient, events
 from telethon.tl.types import DocumentAttributeVideo
-import logging
 
 logger = logging.getLogger(__name__)
 
-async def upload_progress(current, total, event, msg_text="Uploading..."):
-    """Callback function for upload progress."""
+last_update_time = 0
+
+def get_progress_bar(percentage):
+    """Generates a visual progress bar."""
+    filled_len = int(percentage / 10)
+    bar = "■" * filled_len + "□" * (10 - filled_len)
+    return f"|{bar}| {percentage:.0f}%"
+
+def format_time(seconds):
+    """Formats seconds into human-readable time."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    minutes = int(seconds // 60)
+    seconds = int(seconds % 60)
+    return f"{minutes}m {seconds}s"
+
+async def upload_progress(current, total, event, title, episodes_count, start_time):
+    """Callback function for upload progress with rich formatting."""
+    global last_update_time
+    now = time.time()
+    
+    # Update every 5 seconds to avoid flood
+    if now - last_update_time < 5:
+        return
+        
+    last_update_time = now
     percentage = (current / total) * 100
+    progress_bar = get_progress_bar(percentage)
+    
+    # Calculate estimation
+    elapsed_time = now - start_time
+    if current > 0:
+        speed = current / elapsed_time # bytes per second
+        remaining_bytes = total - current
+        eta_seconds = remaining_bytes / speed
+        eta_text = format_time(eta_seconds)
+    else:
+        eta_text = "Menghitung..."
+
+    status_text = (
+        f"🎬 **{title}**\n"
+        f"🔥 Status: upload...\n"
+        f"🎞 Episode {episodes_count}/{episodes_count}\n"
+        f"{progress_bar}\n"
+        f"⏳ Estimasi Selesai: {eta_text}"
+    )
+
     try:
-        # Avoid flood by updating every few percentages
-        if int(percentage) % 10 == 0:
-            await event.edit(f"{msg_text} {percentage:.1f}%")
-    except:
+        await event.edit(status_text)
+    except Exception:
         pass
 
 async def upload_drama(client: TelegramClient, chat_id: int, 
                        title: str, description: str, 
-                       poster_url: str, video_path: str):
+                       poster_url: str, video_path: str,
+                       episodes_count: int = 0,
+                       thread_id: int = None):
     """
     Uploads the drama information and merged video to Telegram.
     """
     import subprocess
     import tempfile
     try:
-        # 1. Send Poster + Description as PHOTO (not file)
+        # 1. Send Poster + Description as PHOTO
         caption = f"🎬 **{title}**\n\n📝 **Sinopsis:**\n{description[:500]}..."
         
-        # Download poster to temp file first so Telethon sends it as photo
         import httpx
         poster_path = None
         try:
@@ -41,22 +85,25 @@ async def upload_drama(client: TelegramClient, chat_id: int,
         except Exception as e:
             logger.warning(f"Failed to download poster: {e}")
         
-        # Send as visible photo
         await client.send_file(
             chat_id,
             poster_path or poster_url,
             caption=caption,
             parse_mode='md',
-            force_document=False  # Force as PHOTO, not file
+            force_document=False,
+            reply_to=thread_id
         )
         
-        # Cleanup poster temp file
         if poster_path and os.path.exists(poster_path):
             os.remove(poster_path)
         
-        status_msg = await client.send_message(chat_id, "📤 Ekstraksi Thumbnail & Durasi Video...")
+        status_msg = await client.send_message(
+            chat_id, 
+            "📤 Ekstraksi Thumbnail & Durasi Video...",
+            reply_to=thread_id
+        )
         
-        # 2. Extract Duration & Dimensions (Fallback directly if fails)
+        # 2. Information Extraction
         duration = 0
         width = 0
         height = 0
@@ -80,9 +127,9 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             logger.warning(f"Failed to generate thumbnail: {e}")
             thumb_path = None
 
-        await status_msg.edit("📤 Sedang mengupload video ke Telegram...")
+        await status_msg.edit(f"🎬 **{title}**\n🔥 Status: Menyiapkan upload...\n🎞 Episode {episodes_count}/{episodes_count}")
         
-        from telethon.tl.types import DocumentAttributeVideo
+        start_time = time.time()
         video_attributes = [
             DocumentAttributeVideo(
                 duration=duration,
@@ -96,11 +143,12 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             chat_id,
             video_path,
             caption=f"🎥 Full Episode: {title}",
-            force_document=False, # FORCE IT AS VIDEO STREAM
+            force_document=False, 
             thumb=thumb_path,
             attributes=video_attributes,
-            progress_callback=lambda c, t: upload_progress(c, t, status_msg, "Upload Video:"),
-            supports_streaming=True
+            progress_callback=lambda c, t: upload_progress(c, t, status_msg, title, episodes_count, start_time),
+            supports_streaming=True,
+            reply_to=thread_id
         )
         
         await status_msg.delete()
@@ -112,3 +160,4 @@ async def upload_drama(client: TelegramClient, chat_id: int,
     except Exception as e:
         logger.error(f"Failed to upload to Telegram: {e}")
         return False
+

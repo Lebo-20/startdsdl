@@ -74,7 +74,10 @@ async def upload_drama(client: TelegramClient, chat_id: int,
     
     try:
         # 1. Send Poster + Description as PHOTO
-        caption = f"🎬 **{title}**\n\n📝 **Sinopsis:**\n{description[:800]}..."
+        if description and description != "No description available.":
+            caption = f"🎬 **{title}**\n\n📝 **Sinopsis:**\n{description[:800]}..."
+        else:
+            caption = f"🎬 **{title}**\n\n"
         
         import httpx
         poster_path = None

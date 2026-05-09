@@ -153,7 +153,7 @@ async def update_bot(event):
     import subprocess
     import sys
     
-    status_msg = await event.reply("🔄 Menarik pembaruan dari GitHub...")
+    status_msg = await event.reply("🔄 Menarik pembaruan dari GitHub...\n\n**Note:** Bot akan otomatis restart setelah proses update selesai.")
     try:
         # Run git pull
         result = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True)
@@ -164,12 +164,6 @@ async def update_bot(event):
     except Exception as e:
         await status_msg.edit(f"❌ Gagal melakukan update: {e}")
 
-@client.on(events.NewMessage(pattern='/stardustv panel'))
-async def panel(event):
-    if event.sender_id != ADMIN_ID:
-        return
-    await event.reply("🎛 **StardustTV Control Panel**", buttons=get_panel_buttons())
-
 @client.on(events.CallbackQuery())
 async def panel_callback(event):
     if event.sender_id != ADMIN_ID:
@@ -179,22 +173,45 @@ async def panel_callback(event):
     try:
         if data == b"start_auto":
             BotState.is_auto_running = True
-            await event.answer("Auto-mode started!")
-            await event.edit("🎛 **StardustTV Control Panel**", buttons=get_panel_buttons())
+            await event.answer("Auto-mode started!", alert=True)
+            await event.edit("🎛 **StardustTV Control Panel**\n\nNote: Auto-mode aktif, bot akan scan drama baru setiap 15 menit.", buttons=get_panel_buttons())
         elif data == b"stop_auto":
             BotState.is_auto_running = False
-            await event.answer("Auto-mode stopped!")
-            await event.edit("🎛 **StardustTV Control Panel**", buttons=get_panel_buttons())
+            await event.answer("Auto-mode stopped!", alert=True)
+            await event.edit("🎛 **StardustTV Control Panel**\n\nNote: Auto-mode dimatikan. Bot hanya akan memproses perintah manual.", buttons=get_panel_buttons())
         elif data == b"status":
-            await event.answer(f"Status: {'Running' if BotState.is_auto_running else 'Stopped'}")
+            status = 'Running' if BotState.is_auto_running else 'Stopped'
+            await event.answer(f"Status: {status}", alert=False)
             await event.edit("🎛 **StardustTV Control Panel**", buttons=get_panel_buttons())
+        elif data == b"bot_active_status":
+            status = "Aktif" if BotState.is_auto_running else "Standby"
+            await event.answer(f"🚀 Bot dalam keadaan {status}!", alert=True)
     except Exception as e:
         logger.error(f"Callback error: {e}")
+
+@client.on(events.NewMessage(pattern='/stardustv panel'))
+async def panel(event):
+    if event.sender_id != ADMIN_ID:
+        return
+    note = "\n\n**Note:** Gunakan panel ini untuk mengatur mode otomatis bot."
+    await event.reply("🎛 **StardustTV Control Panel**" + note, buttons=get_panel_buttons())
 
 @client.on(events.NewMessage(pattern='/stardustv start'))
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
-    await event.reply("Welcome to StardustTV Downloader Bot! 🎉\n\nGunakan perintah `/stardustv download {slug} {id}` untuk mulai.\nContoh: `/stardustv download rahasia-di-balik-mata-kembar 15203`")
+    status_text = "🟢 Bot Aktif" if BotState.is_auto_running else "🟡 Bot Standby"
+    note = f"\n\n**Note:** {status_text} dan siap menerima perintah. Bot akan otomatis memantau drama baru setiap beberapa menit."
+    
+    buttons = [
+        [Button.inline(f"🤖 Status: {'Aktif' if BotState.is_auto_running else 'Standby'}", b"bot_active_status")]
+    ]
+    
+    await event.reply(
+        "Welcome to StardustTV Downloader Bot! 🎉\n\n"
+        "Gunakan perintah `/stardustv download {slug} {id}` untuk mulai manual.\n"
+        "Contoh: `/stardustv download rahasia-di-balik-mata-kembar 15203`" + note,
+        buttons=buttons
+    )
 
 @client.on(events.NewMessage(pattern=r'/stardustv download (.+) (\d+)'))
 async def on_download(event):
@@ -220,12 +237,16 @@ async def on_download(event):
         # Wait a bit for cleanup
         await asyncio.sleep(2)
 
-    # Check if we are in a topic
+    # Check if we are in a topic/thread
     thread_id = None
-    if event.is_group and event.reply_to:
+    if event.reply_to:
+        # If user replied to a message in a topic, use that topic's ID
         thread_id = event.reply_to.reply_to_msg_id
     elif chat_id == AUTO_CHANNEL:
+        # Default to configured thread if in the auto channel
         thread_id = AUTO_THREAD
+        
+    logger.info(f"Manual download request for {slug}/{drama_id} in chat {chat_id} (Topic: {thread_id})")
         
     async with BotState.processing_lock:
         # 1. Fetch data
@@ -242,7 +263,8 @@ async def on_download(event):
         title = detail.get("title") or f"Drama_{drama_id}"
         title = re.sub(r'\s+(Episode|Eps|Ep)\s+\d+$', '', title, flags=re.IGNORECASE).strip()
         
-        status_msg = await event.reply(f"🎬 **Manual Download: {title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang mendownload dan memproses...")
+        note = "\n\n**Note:** Download manual diprioritaskan. Tugas otomatis (jika ada) akan dihentikan sementara."
+        status_msg = await event.reply(f"🎬 **Manual Download: {title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang mendownload dan memproses..." + note)
         
         success = await process_drama_full(slug, drama_id, chat_id, status_msg, thread_id=thread_id)
         
@@ -258,6 +280,10 @@ async def on_download(event):
 
 async def process_drama_full(slug, drama_id, chat_id, status_msg=None, thread_id=None):
     """Refactored logic to be reusable for auto-mode with rich progress."""
+    # Ensure thread_id is set if posting to the AUTO_CHANNEL (Forum support)
+    if thread_id is None and chat_id == AUTO_CHANNEL:
+        thread_id = AUTO_THREAD
+        
     detail = await get_drama_detail(slug, drama_id)
     episodes = await get_all_episodes(slug, drama_id)
     
@@ -285,7 +311,7 @@ async def process_drama_full(slug, drama_id, chat_id, status_msg=None, thread_id
                 reply_to=thread_id
             )
         except Exception as e:
-            logger.warning(f"Failed to create status message: {e}")
+            logger.warning(f"Failed to create status message in {chat_id} (topic {thread_id}): {e}")
     
     async def update_download_progress(completed, total, success_count):
         if not status_msg: return
@@ -328,9 +354,6 @@ async def process_drama_full(slug, drama_id, chat_id, status_msg=None, thread_id
             return False
 
         # 5. Upload
-        if thread_id is None and chat_id == AUTO_CHANNEL:
-            thread_id = AUTO_THREAD
-            
         if status_msg:
             await status_msg.edit(f"🎬 **Upload: {title}**\n📤 Sending to Telegram...")
 
@@ -453,7 +476,24 @@ async def auto_mode_loop():
 
 if __name__ == '__main__':
     logger.info("Initializing StardustTV Bot...")
-    client.start(bot_token=BOT_TOKEN)
+    
+    async def startup_check():
+        try:
+            await client.start(bot_token=BOT_TOKEN)
+            me = await client.get_me()
+            logger.info(f"✅ Bot logged in as: @{me.username} ({me.id})")
+            
+            # Check access to AUTO_CHANNEL
+            try:
+                entity = await client.get_entity(AUTO_CHANNEL)
+                logger.info(f"✅ Access to AUTO_CHANNEL ({AUTO_CHANNEL}) confirmed: {getattr(entity, 'title', 'Private Chat')}")
+            except Exception as e:
+                logger.error(f"❌ CANNOT access AUTO_CHANNEL ({AUTO_CHANNEL}). Make sure bot is an admin: {e}")
+                
+        except Exception as e:
+            logger.error(f"❌ Startup error: {e}")
+
+    client.loop.run_until_complete(startup_check())
     client.loop.create_task(auto_mode_loop())
     logger.info("Bot is active and monitoring.")
     client.run_until_disconnected()

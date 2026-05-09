@@ -6,6 +6,8 @@ import tempfile
 import random
 import re
 import psycopg2
+import sys
+import glob
 from telethon import TelegramClient, events, Button
 from dotenv import load_dotenv
 
@@ -65,9 +67,15 @@ class Database:
             )
         ''')
         conn.commit()
+        
+        # FIX: Ensure no NULL values in status/attempts which break the increment logic
+        cursor.execute("UPDATE processed_dramas SET attempts = 0 WHERE attempts IS NULL")
+        cursor.execute("UPDATE processed_dramas SET status = 'failed' WHERE status IS NULL")
+        conn.commit()
+        
         cursor.close()
         conn.close()
-        logger.info("✅ Database check completed.")
+        logger.info("✅ Database check and optimization completed.")
         
     def is_processed(self, book_id, title=None):
         conn = self.get_conn()
@@ -522,6 +530,26 @@ if __name__ == '__main__':
     logger.info("Initializing StardustTV Bot...")
     
     async def startup_check():
+        # --- CLEAN SESSION SYSTEM ---
+        # Menghapus file session lama agar koneksi selalu segar (sesuai permintaan user)
+        session_file = 'stardust_bot.session'
+        if os.path.exists(session_file):
+            try:
+                # Kita tidak bisa menghapus file saat sedang dipakai, tapi di titik ini client belum start
+                os.remove(session_file)
+                logger.info(f"🗑️ Session file '{session_file}' dihapus untuk Clean Start.")
+            except Exception as e:
+                logger.warning(f"⚠️ Gagal menghapus session file: {e}")
+
+        # --- CLEAN TEMP FILES ---
+        # Hapus folder stardust_* di temp directory
+        temp_base = tempfile.gettempdir()
+        for folder in glob.glob(os.path.join(temp_base, "stardust_*")):
+            try:
+                shutil.rmtree(folder)
+                logger.info(f"🗑️ Membersihkan folder temp lama: {os.path.basename(folder)}")
+            except: pass
+
         try:
             await client.start(bot_token=BOT_TOKEN)
             me = await client.get_me()

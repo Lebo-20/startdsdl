@@ -155,6 +155,7 @@ def get_panel_buttons():
     status_text = "🟢 RUNNING" if BotState.is_auto_running else "🔴 STOPPED"
     return [
         [Button.inline("▶️ Start Auto", b"start_auto"), Button.inline("⏹ Stop Auto", b"stop_auto")],
+        [Button.inline("📥 Manual Download", b"manual_download"), Button.inline("🔄 Update Bot", b"update_bot")],
         [Button.inline(f"📊 Status: {status_text}", b"status")]
     ]
 
@@ -195,9 +196,28 @@ async def panel_callback(event):
             status = 'Running' if BotState.is_auto_running else 'Stopped'
             await event.answer(f"Status: {status}", alert=False)
             await event.edit("🎛 **StardustTV Control Panel**", buttons=get_panel_buttons())
+        elif data == b"show_panel":
+            await event.edit("🎛 **StardustTV Control Panel**", buttons=get_panel_buttons())
+            await event.answer()
         elif data == b"bot_active_status":
             status = "Aktif" if BotState.is_auto_running else "Standby"
             await event.answer(f"🚀 Bot dalam keadaan {status}!", alert=True)
+        elif data == b"manual_download":
+            await event.respond(
+                "📝 **Manual Download Requested**\n\n"
+                "Silakan kirimkan perintah download dengan format berikut:\n"
+                "`/stardustv download {slug} {id}`\n\n"
+                "**Contoh:**\n"
+                "`/stardustv download rahasia-di-balik-mata-kembar 15203`"
+            )
+            await event.answer()
+        elif data == b"update_bot":
+            await event.respond(
+                "⚠️ **Konfirmasi Update Bot**\n\n"
+                "Apakah Anda yakin ingin menarik pembaruan dari GitHub dan me-restart bot?\n"
+                "Gunakan perintah `/stardustv update` untuk melanjutkan.",
+            )
+            await event.answer()
     except Exception as e:
         logger.error(f"Callback error: {e}")
 
@@ -215,13 +235,13 @@ async def start(event):
     note = f"\n\n**Note:** {status_text} dan siap menerima perintah. Bot akan otomatis memantau drama baru setiap beberapa menit."
     
     buttons = [
+        [Button.inline("🎛 Control Panel", b"show_panel")],
         [Button.inline(f"🤖 Status: {'Aktif' if BotState.is_auto_running else 'Standby'}", b"bot_active_status")]
     ]
     
     await event.reply(
         "Welcome to StardustTV Downloader Bot! 🎉\n\n"
-        "Gunakan perintah `/stardustv download {slug} {id}` untuk mulai manual.\n"
-        "Contoh: `/stardustv download rahasia-di-balik-mata-kembar 15203`" + note,
+        "Gunakan tombol di bawah untuk akses cepat atau ketik `/stardustv panel` untuk kontrol penuh." + note,
         buttons=buttons
     )
 

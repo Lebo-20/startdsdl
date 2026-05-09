@@ -73,42 +73,10 @@ async def upload_drama(client: TelegramClient, chat_id: int,
     logger.info(f"Uploading '{title}' to {chat_id} (Topic: {thread_id or 'General'})")
     
     try:
-        # 1. Send Poster + Description as PHOTO
-        if description and description != "No description available.":
-            caption = f"🎬 **{title}**\n\n📝 **Sinopsis:**\n{description[:800]}..."
-        else:
-            caption = f"🎬 **{title}**\n\n"
-        
-        import httpx
-        poster_path = None
-        if poster_url:
-            try:
-                async with httpx.AsyncClient(timeout=30) as http_client:
-                    resp = await http_client.get(poster_url)
-                    if resp.status_code == 200:
-                        poster_path = os.path.join(tempfile.gettempdir(), f"poster_{int(time.time())}.jpg")
-                        with open(poster_path, "wb") as pf:
-                            pf.write(resp.content)
-            except Exception as e:
-                logger.warning(f"Failed to download poster: {e}")
-        
-        # Send poster
-        await client.send_file(
-            chat_id,
-            poster_path or poster_url if poster_url else None,
-            caption=caption,
-            parse_mode='md',
-            force_document=False,
-            reply_to=thread_id
-        )
-        
-        if poster_path and os.path.exists(poster_path):
-            os.remove(poster_path)
-        
-        # 2. Information Extraction
+        # 1. Information Extraction
         status_msg = await client.send_message(
             chat_id, 
-            "📤 **Menyiapkan Video...**\nEkstraksi metadata video.",
+            f"📤 **Processing {title}...**\nEkstraksi metadata video.",
             reply_to=thread_id
         )
         
@@ -125,7 +93,7 @@ async def upload_drama(client: TelegramClient, chat_id: int,
         except Exception as e:
             logger.warning(f"Failed to extract video info: {e}")
 
-        # 3. Extract Thumbnail
+        # 2. Extract Thumbnail
         thumb_path = os.path.join(tempfile.gettempdir(), f"thumb_{int(time.time())}.jpg")
         try:
             subprocess.run(["ffmpeg", "-y", "-i", video_path, "-ss", "00:00:01.000", "-vframes", "1", thumb_path], capture_output=True)
@@ -135,7 +103,7 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             logger.warning(f"Failed to generate thumbnail: {e}")
             thumb_path = None
 
-        await status_msg.edit(f"🎬 **{title}**\n🔥 Status: Mengunggah ke Telegram...\n🎞 Total {episodes_count} Episode")
+        await status_msg.edit(f"🎬 **{title}**\n🔥 Status: Mengunggah video ke Telegram...\n🎞 Total {episodes_count} Episode")
         
         start_time = time.time()
         video_attributes = [
@@ -147,8 +115,8 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             )
         ]
         
-        # 4. Upload Video
-        await client.send_file(
+        # 3. Upload Video
+        video_msg = await client.send_file(
             chat_id,
             video_path,
             caption=f"🎥 **Full Episode: {title}**",
@@ -160,11 +128,44 @@ async def upload_drama(client: TelegramClient, chat_id: int,
             reply_to=thread_id
         )
         
+        # 4. If video upload success, send Poster + Description
+        if video_msg:
+            if description and description != "No description available.":
+                caption = f"🎬 **{title}**\n\n📝 **Sinopsis:**\n{description[:800]}..."
+            else:
+                caption = f"🎬 **{title}**\n\n"
+            
+            import httpx
+            poster_path = None
+            if poster_url:
+                try:
+                    async with httpx.AsyncClient(timeout=30) as http_client:
+                        resp = await http_client.get(poster_url)
+                        if resp.status_code == 200:
+                            poster_path = os.path.join(tempfile.gettempdir(), f"poster_{int(time.time())}.jpg")
+                            with open(poster_path, "wb") as pf:
+                                pf.write(resp.content)
+                except Exception as e:
+                    logger.warning(f"Failed to download poster: {e}")
+            
+            # Send poster AFTER video
+            await client.send_file(
+                chat_id,
+                poster_path or poster_url if poster_url else None,
+                caption=caption,
+                parse_mode='md',
+                force_document=False,
+                reply_to=thread_id
+            )
+            
+            if poster_path and os.path.exists(poster_path):
+                os.remove(poster_path)
+        
         await status_msg.delete()
         if thumb_path and os.path.exists(thumb_path):
             os.remove(thumb_path)
             
-        logger.info(f"Successfully uploaded {title} to Telegram topic {thread_id}")
+        logger.info(f"Successfully uploaded video and then details for {title}")
         return True
     except Exception as e:
         logger.error(f"Failed to upload to Telegram: {e}")

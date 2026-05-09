@@ -18,7 +18,7 @@ from api import (
 )
 from downloader import download_all_episodes
 from merge import merge_episodes
-from uploader import upload_drama
+from uploader import upload_drama, get_progress_bar
 
 # Configuration
 API_ID = int(os.environ.get("API_ID", "0"))
@@ -40,7 +40,16 @@ class Database:
         self.create_tables()
         
     def get_conn(self):
-        return psycopg2.connect(self.db_url)
+        import time
+        max_retries = 3
+        for i in range(max_retries):
+            try:
+                return psycopg2.connect(self.db_url)
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                if i == max_retries - 1:
+                    raise e
+                logger.warning(f"Database connection failed (attempt {i+1}/{max_retries}): {e}. Retrying in 2s...")
+                time.sleep(2)
         
     def create_tables(self):
         conn = self.get_conn()
@@ -124,9 +133,11 @@ class BotState:
     is_auto_running = True
     active_tasks = 0
     current_auto_task = None
+    processing_lock = asyncio.Lock()
+    manual_interrupt = False
 
 # Initialize client
-client = TelegramClient('stardust_bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+client = TelegramClient('stardust_bot', API_ID, API_HASH)
 
 def get_panel_buttons():
     status_text = "🟢 RUNNING" if BotState.is_auto_running else "🔴 STOPPED"
@@ -135,7 +146,7 @@ def get_panel_buttons():
         [Button.inline(f"📊 Status: {status_text}", b"status")]
     ]
 
-@client.on(events.NewMessage(pattern='/stardust update'))
+@client.on(events.NewMessage(pattern='/stardustv update'))
 async def update_bot(event):
     if event.sender_id != ADMIN_ID:
         return
@@ -153,7 +164,7 @@ async def update_bot(event):
     except Exception as e:
         await status_msg.edit(f"❌ Gagal melakukan update: {e}")
 
-@client.on(events.NewMessage(pattern='/stardust panel'))
+@client.on(events.NewMessage(pattern='/stardustv panel'))
 async def panel(event):
     if event.sender_id != ADMIN_ID:
         return
@@ -180,12 +191,12 @@ async def panel_callback(event):
     except Exception as e:
         logger.error(f"Callback error: {e}")
 
-@client.on(events.NewMessage(pattern='/stardust start'))
+@client.on(events.NewMessage(pattern='/stardustv start'))
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
-    await event.reply("Welcome to StardustTV Downloader Bot! 🎉\n\nGunakan perintah `/stardust download {slug} {id}` untuk mulai.\nContoh: `/stardust download rahasia-di-balik-mata-kembar 15203`")
+    await event.reply("Welcome to StardustTV Downloader Bot! 🎉\n\nGunakan perintah `/stardustv download {slug} {id}` untuk mulai.\nContoh: `/stardustv download rahasia-di-balik-mata-kembar 15203`")
 
-@client.on(events.NewMessage(pattern=r'/stardust download (.+) (\d+)'))
+@client.on(events.NewMessage(pattern=r'/stardustv download (.+) (\d+)'))
 async def on_download(event):
     chat_id = event.chat_id
     
@@ -194,18 +205,21 @@ async def on_download(event):
         await event.reply("❌ Maaf, perintah ini hanya untuk admin.")
         return
         
+    slug = event.pattern_match.group(1).strip()
+    drama_id = event.pattern_match.group(2).strip()
+    
     # PRIORITAS MANUAL: Hentikan auto task jika sedang berjalan
     if BotState.current_auto_task and not BotState.current_auto_task.done():
-        logger.info("⚔️ Manual command received. Stopping current auto-task...")
+        logger.info("⚔️ Manual command received. Cancelling current auto-task...")
+        BotState.manual_interrupt = True
         BotState.current_auto_task.cancel()
         try:
             await BotState.current_auto_task
         except asyncio.CancelledError:
             pass
-        
-    slug = event.pattern_match.group(1).strip()
-    drama_id = event.pattern_match.group(2).strip()
-    
+        # Wait a bit for cleanup
+        await asyncio.sleep(2)
+
     # Check if we are in a topic
     thread_id = None
     if event.is_group and event.reply_to:
@@ -213,33 +227,37 @@ async def on_download(event):
     elif chat_id == AUTO_CHANNEL:
         thread_id = AUTO_THREAD
         
-    # 1. Fetch data
-    detail = await get_drama_detail(slug, drama_id)
-    if not detail:
-        await event.reply(f"❌ Gagal mendapatkan detail drama `{slug}/{drama_id}`.")
-        return
-        
-    episodes = await get_all_episodes(slug, drama_id)
-    if not episodes:
-        await event.reply(f"❌ Drama `{slug}/{drama_id}` tidak memiliki episode.")
-        return
+    async with BotState.processing_lock:
+        # 1. Fetch data
+        detail = await get_drama_detail(slug, drama_id)
+        if not detail:
+            await event.reply(f"❌ Gagal mendapatkan detail drama `{slug}/{drama_id}`.")
+            return
+            
+        episodes = await get_all_episodes(slug, drama_id)
+        if not episodes:
+            await event.reply(f"❌ Drama `{slug}/{drama_id}` tidak memiliki episode.")
+            return
 
-    title = detail.get("title") or f"Drama_{drama_id}"
-    title = re.sub(r'\s+(Episode|Eps|Ep)\s+\d+$', '', title, flags=re.IGNORECASE).strip()
-    
-    status_msg = await event.reply(f"🎬 Drama: **{title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang mendownload dan memproses...")
-    
-    success = await process_drama_full(slug, drama_id, chat_id, status_msg, thread_id=thread_id)
-    
-    if success:
-        db.mark_success(drama_id, title)
-        logger.info(f"✅ Berhasil memproses manual: {slug}/{drama_id}")
-    else:
-        db.mark_failed(drama_id, title)
-        logger.error(f"❌ Gagal memproses manual: {slug}/{drama_id}")
+        title = detail.get("title") or f"Drama_{drama_id}"
+        title = re.sub(r'\s+(Episode|Eps|Ep)\s+\d+$', '', title, flags=re.IGNORECASE).strip()
+        
+        status_msg = await event.reply(f"🎬 **Manual Download: {title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang mendownload dan memproses...")
+        
+        success = await process_drama_full(slug, drama_id, chat_id, status_msg, thread_id=thread_id)
+        
+        if success:
+            db.mark_success(drama_id, title)
+            logger.info(f"✅ Berhasil memproses manual: {slug}/{drama_id}")
+        else:
+            db.mark_failed(drama_id, title)
+            logger.error(f"❌ Gagal memproses manual: {slug}/{drama_id}")
+        
+        # Reset interrupt flag after manual finished
+        BotState.manual_interrupt = False
 
 async def process_drama_full(slug, drama_id, chat_id, status_msg=None, thread_id=None):
-    """Refactored logic to be reusable for auto-mode."""
+    """Refactored logic to be reusable for auto-mode with rich progress."""
     detail = await get_drama_detail(slug, drama_id)
     episodes = await get_all_episodes(slug, drama_id)
     
@@ -251,53 +269,91 @@ async def process_drama_full(slug, drama_id, chat_id, status_msg=None, thread_id
     title = re.sub(r'\s+(Episode|Eps|Ep)\s+\d+$', '', title, flags=re.IGNORECASE).strip()
     description = detail.get("intro") or "No description available."
     poster = detail.get("poster") or ""
+    total_eps = len(episodes)
     
     # Setup temp directory
     temp_dir = tempfile.mkdtemp(prefix=f"stardust_{drama_id}_")
     video_dir = os.path.join(temp_dir, "episodes")
     os.makedirs(video_dir, exist_ok=True)
     
+    # Create a status message if not provided (for auto-mode)
+    if not status_msg:
+        try:
+            status_msg = await client.send_message(
+                chat_id, 
+                f"🎬 **[AUTO] Processing: {title}**\n⏳ Menyiapkan tugas...",
+                reply_to=thread_id
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create status message: {e}")
+    
+    async def update_download_progress(completed, total, success_count):
+        if not status_msg: return
+        percentage = (completed / total) * 100
+        bar = get_progress_bar(percentage)
+        text = (
+            f"🎬 **Download: {title}**\n"
+            f"⏳ Downloading episodes...\n"
+            f"`{bar}` {percentage:.1f}%\n"
+            f"✅ Success: {success_count} / {total}"
+        )
+        try:
+            await status_msg.edit(text)
+        except: pass
+
     try:
-        if status_msg: await status_msg.edit(f"🎬 Processing **{title}**...")
+        if status_msg:
+            await status_msg.edit(f"🎬 **Download: {title}**\n⏳ Initializing...")
         
         # 3. Download
-        success = await download_all_episodes(episodes, video_dir)
+        success = await download_all_episodes(episodes, video_dir, progress_callback=update_download_progress)
         if not success:
-            if status_msg: await status_msg.edit("❌ Download Gagal.")
-            return False
+            # We still continue if some episodes failed but at least one succeeded?
+            # Actually the user example showed 78/85 success, so it implies partial success is okay for them.
+            # But downloader.py returns all(results). Let's see.
+            files = [f for f in os.listdir(video_dir) if f.endswith(".mp4")]
+            if not files:
+                if status_msg: await status_msg.edit(f"❌ **{title}**: Download Gagal (Semua episode gagal).")
+                return False
+            logger.warning(f"Some episodes failed for {title}, but continuing with {len(files)} files.")
 
         # 4. Merge
+        if status_msg:
+            await status_msg.edit(f"🎬 **Merge: {title}**\n⏳ Merging {len(os.listdir(video_dir))} episodes into one file...")
+            
         output_video_path = os.path.join(temp_dir, f"{title}.mp4")
         merge_success = merge_episodes(video_dir, output_video_path)
         if not merge_success:
-            if status_msg: await status_msg.edit("❌ Merge Gagal.")
+            if status_msg: await status_msg.edit(f"❌ **{title}**: Merge Gagal.")
             return False
 
         # 5. Upload
         if thread_id is None and chat_id == AUTO_CHANNEL:
             thread_id = AUTO_THREAD
             
+        if status_msg:
+            await status_msg.edit(f"🎬 **Upload: {title}**\n📤 Sending to Telegram...")
+
         upload_success = await upload_drama(
             client, chat_id, 
             title, description, 
             poster, output_video_path,
-            episodes_count=len(episodes),
+            episodes_count=total_eps,
             thread_id=thread_id
         )
         
         if upload_success:
             if status_msg: await status_msg.delete()
-            # JEDA SETELAH UPLOAD (Sesuai permintaan user)
             logger.info(f"⏳ Berhasil upload {title}. Menunggu 10 detik...")
             await asyncio.sleep(10)
             return True
         else:
-            if status_msg: await status_msg.edit("❌ Upload Gagal.")
+            if status_msg: await status_msg.edit(f"❌ **{title}**: Upload Gagal.")
             return False
             
     except Exception as e:
         logger.error(f"Error processing {drama_id}: {e}")
-        if status_msg: await status_msg.edit(f"❌ Error: {e}")
+        if status_msg: await status_msg.edit(f"❌ **Error {title}**: {e}")
         return False
     finally:
         if os.path.exists(temp_dir):
@@ -315,6 +371,11 @@ async def auto_mode_loop():
             continue
             
         try:
+            # Jika baru saja ada interupsi manual, tunggu sebentar sebelum scan lagi
+            if BotState.manual_interrupt:
+                await asyncio.sleep(10)
+                continue
+
             interval = 5 if is_initial_run else 15
             logger.info(f"🔍 Scanning StardustTV (Next scan in {interval}m)...")
             
@@ -329,11 +390,16 @@ async def auto_mode_loop():
                 if not db.is_processed(drama_id, title=title):
                     new_dramas.append(d)
             
+            if not new_dramas:
+                logger.info("ℹ️ No new dramas found to process.")
+            else:
+                logger.info(f"✨ Found {len(new_dramas)} new dramas to process.")
+            
             # --- Build queue ---
             queue = [(d,) for d in new_dramas]
             
             for (drama,) in queue:
-                if not BotState.is_auto_running:
+                if not BotState.is_auto_running or BotState.manual_interrupt:
                     break
                     
                 drama_id = str(drama.get("id", ""))
@@ -350,32 +416,34 @@ async def auto_mode_loop():
                     await client.send_message(ADMIN_ID, f"🆕 **Auto-System Detection!**\n🎬 `{title}`\n🆔 `{slug}/{drama_id}`\n⏳ Processing...")
                 except: pass
                 
-                # Gunakan create_task agar bisa dibatalkan jika ada perintah manual
-                BotState.current_auto_task = asyncio.create_task(
-                    process_drama_full(slug, drama_id, AUTO_CHANNEL)
-                )
-                
-                try:
-                    success = await BotState.current_auto_task
-                    if success:
-                        db.mark_success(drama_id, title)
-                        logger.info(f"✅ Finished {title}")
-                        try:
-                            await client.send_message(ADMIN_ID, f"✅ Sukses Auto-Post: **{title}**")
-                        except: pass
-                    else:
-                        db.mark_failed(drama_id, title)
-                        logger.error(f"❌ Failed to process {title}")
-                except asyncio.CancelledError:
-                    logger.info(f"🛑 Auto-task untuk '{title}' dihentikan karena prioritas manual.")
-                    # Tidak ditandai sukses/gagal agar bisa dicoba lagi nanti
-                    break # Keluar dari batch ini untuk memproses manual
+                # Gunakan lock untuk memastikan tidak ada konflik dengan manual download
+                async with BotState.processing_lock:
+                    # Gunakan create_task agar bisa dibatalkan jika ada perintah manual
+                    BotState.current_auto_task = asyncio.create_task(
+                        process_drama_full(slug, drama_id, AUTO_CHANNEL)
+                    )
+                    
+                    try:
+                        success = await BotState.current_auto_task
+                        if success:
+                            db.mark_success(drama_id, title)
+                            logger.info(f"✅ Finished {title}")
+                            try:
+                                await client.send_message(ADMIN_ID, f"✅ Sukses Auto-Post: **{title}**")
+                            except: pass
+                        else:
+                            db.mark_failed(drama_id, title)
+                            logger.error(f"❌ Failed to process {title}")
+                    except asyncio.CancelledError:
+                        logger.info(f"🛑 Auto-task untuk '{title}' dihentikan karena prioritas manual.")
+                        # Tidak ditandai sukses/gagal agar bisa dicoba lagi nanti
+                        break # Keluar dari batch ini untuk memproses manual
                 
                 await asyncio.sleep(15)
             
             is_initial_run = False
             for _ in range(interval * 60):
-                if not BotState.is_auto_running:
+                if not BotState.is_auto_running or BotState.manual_interrupt:
                     break
                 await asyncio.sleep(1)
             
@@ -385,6 +453,7 @@ async def auto_mode_loop():
 
 if __name__ == '__main__':
     logger.info("Initializing StardustTV Bot...")
+    client.start(bot_token=BOT_TOKEN)
     client.loop.create_task(auto_mode_loop())
     logger.info("Bot is active and monitoring.")
     client.run_until_disconnected()

@@ -19,6 +19,7 @@ from api import (
 from downloader import download_all_episodes
 from merge import merge_episodes
 from uploader import upload_drama, get_progress_bar
+from firebase_db import is_already_uploaded, mark_as_uploaded
 
 # Configuration
 API_ID = int(os.environ.get("API_ID", "0"))
@@ -85,6 +86,10 @@ class Database:
         conn.close()
         
         if not row:
+            # Secondary check with Firebase
+            if title and is_already_uploaded(title):
+                logger.info(f"🔍 Found {title} in Firebase registry. Skipping.")
+                return True
             return False
             
         status, attempts = row
@@ -93,6 +98,10 @@ class Database:
             
         if status == 'failed' and attempts >= 2:
             return True # Skip permanently if failed twice
+            
+        # Final check with Firebase even if PG has it as failed/pending
+        if title and is_already_uploaded(title):
+            return True
             
         return False
 
@@ -110,6 +119,9 @@ class Database:
         conn.commit()
         cursor.close()
         conn.close()
+        
+        # Sync with Firebase
+        mark_as_uploaded(title)
         
     def mark_failed(self, book_id, title):
         conn = self.get_conn()
@@ -263,6 +275,11 @@ async def on_download(event):
         title = detail.get("title") or f"Drama_{drama_id}"
         title = re.sub(r'\s+(Episode|Eps|Ep)\s+\d+$', '', title, flags=re.IGNORECASE).strip()
         
+        # Check if already processed
+        if db.is_processed(drama_id, title=title):
+            await event.reply(f"ℹ️ Drama **{title}** sudah pernah di-upload berhasil. Lewati...")
+            return
+
         note = "\n\n**Note:** Download manual diprioritaskan. Tugas otomatis (jika ada) akan dihentikan sementara."
         status_msg = await event.reply(f"🎬 **Manual Download: {title}**\n📽 Total Episodes: {len(episodes)}\n\n⏳ Sedang mendownload dan memproses..." + note)
         
@@ -293,6 +310,13 @@ async def process_drama_full(slug, drama_id, chat_id, status_msg=None, thread_id
 
     title = detail.get("title") or f"Drama_{drama_id}"
     title = re.sub(r'\s+(Episode|Eps|Ep)\s+\d+$', '', title, flags=re.IGNORECASE).strip()
+    
+    # Last check before starting
+    if db.is_processed(drama_id, title=title):
+        logger.info(f"ℹ️ {title} is already processed. Skipping full execution.")
+        if status_msg: await status_msg.edit(f"ℹ️ Drama **{title}** sudah pernah di-upload.")
+        return True
+
     description = detail.get("intro") or "No description available."
     poster = detail.get("poster") or ""
     total_eps = len(episodes)

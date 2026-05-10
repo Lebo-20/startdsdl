@@ -66,8 +66,16 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        conn.commit()
         
+        # Ensure drama_id column exists for compatibility
+        try:
+            cursor.execute("ALTER TABLE processed_dramas ADD COLUMN IF NOT EXISTS drama_id TEXT")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_processed_dramas_drama_id ON processed_dramas(drama_id)")
+        except:
+            conn.rollback()
+        else:
+            conn.commit()
+
         # FIX: Ensure no NULL values in status/attempts which break the increment logic
         cursor.execute("UPDATE processed_dramas SET attempts = 0 WHERE attempts IS NULL")
         cursor.execute("UPDATE processed_dramas SET status = 'failed' WHERE status IS NULL")
@@ -81,8 +89,8 @@ class Database:
         conn = self.get_conn()
         cursor = conn.cursor()
         
-        # Check by book_id
-        cursor.execute("SELECT status, attempts FROM processed_dramas WHERE book_id = %s", (str(book_id),))
+        # Check by book_id OR drama_id (compatibility check)
+        cursor.execute("SELECT status, attempts FROM processed_dramas WHERE book_id = %s OR drama_id = %s", (str(book_id), str(book_id)))
         row = cursor.fetchone()
         
         # Also check by title if provided (to prevent duplicates even with different IDs)
@@ -116,14 +124,30 @@ class Database:
     def mark_success(self, book_id, title):
         conn = self.get_conn()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO processed_dramas (book_id, title, status, attempts, created_at) 
-            VALUES (%s, %s, 'success', 1, CURRENT_TIMESTAMP)
-            ON CONFLICT(book_id) DO UPDATE SET 
-                status = 'success', 
-                attempts = processed_dramas.attempts + 1,
-                created_at = CURRENT_TIMESTAMP
-        """, (str(book_id), title))
+        # Use a more robust upsert that handles either book_id or drama_id conflict
+        try:
+            # First try by book_id
+            cursor.execute("""
+                INSERT INTO processed_dramas (book_id, drama_id, title, status, attempts, created_at) 
+                VALUES (%s, %s, %s, 'success', 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(book_id) DO UPDATE SET 
+                    status = 'success', 
+                    drama_id = EXCLUDED.drama_id,
+                    attempts = processed_dramas.attempts + 1,
+                    created_at = CURRENT_TIMESTAMP
+            """, (str(book_id), str(book_id), title))
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            # If book_id didn't conflict but drama_id did
+            cursor.execute("""
+                UPDATE processed_dramas SET 
+                    status = 'success', 
+                    book_id = %s,
+                    attempts = attempts + 1,
+                    created_at = CURRENT_TIMESTAMP
+                WHERE drama_id = %s
+            """, (str(book_id), str(book_id)))
+        
         conn.commit()
         cursor.close()
         conn.close()
@@ -134,17 +158,31 @@ class Database:
     def mark_failed(self, book_id, title):
         conn = self.get_conn()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO processed_dramas (book_id, title, status, attempts, created_at) 
-            VALUES (%s, %s, 'failed', 1, CURRENT_TIMESTAMP)
-            ON CONFLICT(book_id) DO UPDATE SET 
-                status = 'failed', 
-                attempts = processed_dramas.attempts + 1,
-                created_at = CURRENT_TIMESTAMP
-        """, (str(book_id), title))
+        try:
+            cursor.execute("""
+                INSERT INTO processed_dramas (book_id, drama_id, title, status, attempts, created_at) 
+                VALUES (%s, %s, %s, 'failed', 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(book_id) DO UPDATE SET 
+                    status = 'failed', 
+                    drama_id = EXCLUDED.drama_id,
+                    attempts = processed_dramas.attempts + 1,
+                    created_at = CURRENT_TIMESTAMP
+            """, (str(book_id), str(book_id), title))
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            cursor.execute("""
+                UPDATE processed_dramas SET 
+                    status = 'failed', 
+                    book_id = %s,
+                    attempts = attempts + 1,
+                    created_at = CURRENT_TIMESTAMP
+                WHERE drama_id = %s
+            """, (str(book_id), str(book_id)))
+            
         conn.commit()
         cursor.close()
         conn.close()
+
 
 db = Database(DATABASE_URL)
 

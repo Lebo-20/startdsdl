@@ -45,7 +45,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 # Initialize client with session logic
-if SESSION_STRING:
+SESSION_STRING = SESSION_STRING.strip().strip('"').strip("'")
+if SESSION_STRING and len(SESSION_STRING) > 10:
     logger.info("🔐 Menggunakan StringSession untuk menghindari masalah SQLite.")
     session = StringSession(SESSION_STRING)
 else:

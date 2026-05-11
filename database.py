@@ -30,11 +30,11 @@ class Database:
         try:
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
+                    # 1. Create tables if not exists
                     cur.execute('''
                         CREATE TABLE IF NOT EXISTS processed_dramas (
                             id TEXT PRIMARY KEY,
                             title TEXT,
-                            normalized_title TEXT,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )
                     ''')
@@ -46,13 +46,21 @@ class Database:
                             permanent_skip BOOLEAN DEFAULT FALSE
                         )
                     ''')
+                    
+                    # 2. Migration: Add normalized_title if missing
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='processed_dramas' AND column_name='normalized_title'")
+                    if not cur.fetchone():
+                        logger.info("🛠️ Migrating database: Adding 'normalized_title' column...")
+                        cur.execute("ALTER TABLE processed_dramas ADD COLUMN normalized_title TEXT")
+                    
+                    # 3. Ensure Index
                     cur.execute('''
                         CREATE INDEX IF NOT EXISTS idx_normalized_title ON processed_dramas(normalized_title)
                     ''')
                 conn.commit()
-            logger.info("✅ Database tables checked/created successfully.")
+            logger.info("✅ Database tables and migrations checked successfully.")
         except Exception as e:
-            logger.error(f"❌ Failed to create database tables: {e}")
+            logger.error(f"❌ Failed to create/migrate database tables: {e}")
 
     def normalize_title(self, title):
         if not title: return ""

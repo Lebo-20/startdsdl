@@ -4,6 +4,7 @@ import logging
 import psycopg2
 from psycopg2.extras import DictCursor
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from firebase_db import is_already_uploaded, mark_as_uploaded
 
 load_dotenv()
@@ -11,6 +12,11 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    logger.error("❌ DATABASE_URL not found in environment variables!")
+    # We don't exit here to allow the bot to potentially log other errors, 
+    # but the Database class will fail.
 
 class Database:
     def __init__(self):
@@ -142,4 +148,12 @@ class Database:
             logger.error(f"Error marking failure: {e}")
             return False
 
-db = Database()
+try:
+    if DATABASE_URL:
+        db = Database()
+    else:
+        db = None
+        logger.error("❌ Database instance not created because DATABASE_URL is missing.")
+except Exception as e:
+    db = None
+    logger.error(f"❌ Failed to initialize Database: {e}")

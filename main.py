@@ -24,6 +24,13 @@ from uploader import upload_drama, get_progress_bar
 from database import db
 from firebase_db import is_already_uploaded, mark_as_uploaded
 
+# Critical check for database
+if db is None:
+    print("❌ CRITICAL ERROR: Database initialization failed!")
+    print("Please check your .env file and ensure DATABASE_URL is correct.")
+    import sys
+    sys.exit(1)
+
 # Configuration
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")

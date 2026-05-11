@@ -56,7 +56,9 @@ class BotState:
     manual_interrupt = False
 
 # Initialize client
-client = TelegramClient('stardust_session_v2', API_ID, API_HASH)
+# Menggunakan explicit path untuk session sesuai permintaan user
+SESSION_PATH = '/root/startdsdl/stardust'
+client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
 
 def get_panel_buttons():
     status_text = "🟢 RUNNING" if BotState.is_auto_running else "🔴 STOPPED"
@@ -431,23 +433,49 @@ if __name__ == '__main__':
     async def startup_check():
         # --- CLEAN SESSION SYSTEM ---
         # Menghapus file session lama agar koneksi selalu segar
-        session_file = 'stardust_session_v2.session'
-        if os.path.exists(session_file):
-            try:
-                # Kita tidak bisa menghapus file saat sedang dipakai, tapi di titik ini client belum start
-                os.remove(session_file)
-                logger.info(f"🗑️ Session file '{session_file}' dihapus untuk Clean Start.")
-            except Exception as e:
-                logger.warning(f"⚠️ Gagal menghapus session file: {e}")
+        # SQLite sering error 'readonly' jika file journal tertinggal
+        session_files = [
+            f"{SESSION_PATH}.session",
+            f"{SESSION_PATH}.session-journal",
+            f"{SESSION_PATH}.session-wal",
+            f"{SESSION_PATH}.session-shm"
+        ]
+        
+        for s_file in session_files:
+            if os.path.exists(s_file):
+                try:
+                    os.remove(s_file)
+                    logger.info(f"🗑️ File '{s_file}' dihapus untuk Clean Start.")
+                except Exception as e:
+                    logger.warning(f"⚠️ Gagal menghapus {s_file}: {e}")
 
         # --- CLEAN TEMP FILES ---
-        # Hapus folder stardust_* di temp directory
+        # Hapus folder stardust_* di temp directory (biasanya di /tmp pada Linux)
         temp_base = tempfile.gettempdir()
+        logger.info(f"🧹 Membersihkan file sampah di {temp_base}...")
+        
+        # Bersihkan folder stardust_*
         for folder in glob.glob(os.path.join(temp_base, "stardust_*")):
             try:
                 shutil.rmtree(folder)
-                logger.info(f"🗑️ Membersihkan folder temp lama: {os.path.basename(folder)}")
+                logger.info(f"🗑️ Folder temp dihapus: {os.path.basename(folder)}")
             except: pass
+            
+        # Bersihkan file thumbnail/poster tertinggal
+        for f in glob.glob(os.path.join(temp_base, "thumb_*.jpg")):
+            try: os.remove(f)
+            except: pass
+        for f in glob.glob(os.path.join(temp_base, "poster_*.jpg")):
+            try: os.remove(f)
+            except: pass
+        
+        # Check disk space (informational)
+        try:
+            total, used, free = shutil.disk_usage(".")
+            logger.info(f"💾 Disk Space: Total: {total // (2**30)}GB, Used: {used // (2**30)}GB, Free: {free // (2**30)}GB")
+            if free < 1 * (2**30): # < 1GB
+                logger.warning("⚠️ RUANG DISK SANGAT RENDAH! Bot mungkin gagal menyimpan session atau download.")
+        except: pass
 
         try:
             await client.start(bot_token=BOT_TOKEN)

@@ -56,7 +56,7 @@ class BotState:
     manual_interrupt = False
 
 # Initialize client
-client = TelegramClient('stardust_bot', API_ID, API_HASH)
+client = TelegramClient('stardust_session_v2', API_ID, API_HASH)
 
 def get_panel_buttons():
     status_text = "🟢 RUNNING" if BotState.is_auto_running else "🔴 STOPPED"
@@ -430,8 +430,8 @@ if __name__ == '__main__':
     
     async def startup_check():
         # --- CLEAN SESSION SYSTEM ---
-        # Menghapus file session lama agar koneksi selalu segar (sesuai permintaan user)
-        session_file = 'stardust_bot.session'
+        # Menghapus file session lama agar koneksi selalu segar
+        session_file = 'stardust_session_v2.session'
         if os.path.exists(session_file):
             try:
                 # Kita tidak bisa menghapus file saat sedang dipakai, tapi di titik ini client belum start

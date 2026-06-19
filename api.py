@@ -3,7 +3,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://stardusttv.dramabos.my.id/v1"
+BASE_URL = "https://stardusttv.dramabos.online/v1"
 AUTH_CODE = "A8D6AB170F7B89F2182561D3B32F390D"
 
 

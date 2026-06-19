@@ -232,9 +232,11 @@ async def auto_mode_loop():
                     BotState.current_auto_task = asyncio.create_task(process_drama_full(d.get("slug"), drama_id, AUTO_CHANNEL))
                     if await BotState.current_auto_task: db.mark_success(drama_id, title)
                     else: db.mark_failed(drama_id, title)
-                await asyncio.sleep(15)
+                # Cooldown 30 minutes after processing
+                logger.info("💤 Auto-mode cooling down for 30 minutes...")
+                await asyncio.sleep(30 * 60)
             is_initial_run = False
-            await asyncio.sleep(15 * 60)
+            await asyncio.sleep(120 * 60)
         except Exception as e:
             logger.error(f"Auto error: {e}")
             await asyncio.sleep(60)
